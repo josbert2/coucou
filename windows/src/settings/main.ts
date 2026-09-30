@@ -262,6 +262,8 @@ interface IntegrationDef {
   color: string;
   /** Credential Manager keys, in the order they are shown. */
   fields: { key: string; label: string; placeholder: string; secret: boolean }[];
+  /** Shown instead of the key fields for integrations that need none. */
+  note?: string;
 }
 
 const INTEGRATIONS: IntegrationDef[] = [
@@ -282,6 +284,8 @@ const INTEGRATIONS: IntegrationDef[] = [
     fields: [{ key: "notion-api-key", label: "Integration token", placeholder: "ntn_…", secret: true }] },
   { id: "integration_calcom", name: "Cal.com", color: "#C9956A",
     fields: [{ key: "calcom-api-key", label: "API key", placeholder: "cal_…", secret: true }] },
+  { id: "integration_agentation", name: "Agentation", color: "#EC4899", fields: [],
+    note: "No key needed — reads pending annotations from the local agentation-mcp server (localhost:4747)." },
 ];
 
 const MAX_ACTIVE = 4;
@@ -341,6 +345,8 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
         ),
       );
     }
+
+    if (def.note) rows.append(h("div", { class: "hint", text: def.note }));
 
     list.append(
       h("div", { style: "display:flex;gap:12px;align-items:flex-start" },

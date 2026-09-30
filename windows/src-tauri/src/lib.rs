@@ -145,7 +145,20 @@ fn open_url(url: String) {
         .creation_flags(CREATE_NO_WINDOW)
         .spawn();
     #[cfg(unix)]
-    let _ = Command::new("xdg-open").arg(&url).spawn();
+    {
+        let mut cmd = Command::new("xdg-open");
+        cmd.arg(&url);
+        spawn_and_reap(cmd);
+    }
+}
+
+/// Runs a short-lived helper and waits for it off the main thread, so it does not
+/// linger as a zombie process until Coucou quits.
+#[cfg(unix)]
+fn spawn_and_reap(mut cmd: Command) {
+    std::thread::spawn(move || {
+        let _ = cmd.status();
+    });
 }
 
 /// "Open terminal" opens the working folder in VS Code when `code` is on PATH,
@@ -204,6 +217,22 @@ pub(crate) fn find_on_path(stem: &str) -> Option<std::path::PathBuf> {
                 .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
                 .unwrap_or(false)
         })
+}
+
+/// Desktop notification for when Claude finishes while nobody is watching the
+/// island. Linux only for now (`notify-send`); elsewhere it is a no-op.
+#[tauri::command]
+fn notify(title: String, body: String) {
+    #[cfg(target_os = "linux")]
+    {
+        let mut cmd = Command::new("notify-send");
+        cmd.args(["--app-name=Coucou", "--icon=dialog-information", "--"])
+            .arg(title.chars().take(80).collect::<String>())
+            .arg(body.chars().take(240).collect::<String>());
+        spawn_and_reap(cmd);
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (title, body);
 }
 
 #[tauri::command]
@@ -423,6 +452,7 @@ pub fn run() {
             reposition,
             open_url,
             open_in_vscode,
+            notify,
             quit_app,
             hooks_status,
             hooks_preview,

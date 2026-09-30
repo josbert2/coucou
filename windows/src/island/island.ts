@@ -13,6 +13,7 @@ import { Sound } from "../core/sound";
 import { State } from "../core/state";
 import { BotEngine, hexToRGB } from "../mochi/engine";
 import { Greeting } from "../mochi/greeting";
+import { MoodParticles, pickMood, type MoodKind } from "../mochi/moods";
 import { createMiniBot, pruneMiniBots, syncMiniBotStates, tickMiniBots } from "../mochi/minibots";
 import { UploadCanvas } from "../upload/canvas";
 import { USC, UploadSeq } from "../upload/sequence";
@@ -59,6 +60,9 @@ export class Island {
   private botSize = new Spring(10);
 
   private engine = new BotEngine();
+  private moods = new MoodParticles();
+  /** When the next resting mood may play (performance.now() ms). */
+  private nextMoodAt = performance.now() + 6000;
   private greeting = new Greeting();
 
   private running = false;
@@ -95,6 +99,7 @@ export class Island {
     this.wireInput();
     this.engine.onDizzy = () => this.handleDizzy();
     this.greeting.onComplete = () => this.fsm.greetComplete();
+    window.setInterval(() => this.restingMoodTick(), 1000);
     State.subscribe(() => {
       this.dirty = true;
       this.ensureRunning();
@@ -209,6 +214,7 @@ export class Island {
       this.botCanvas,
       this.miniGrid,
       this.countdown,
+      this.moods.el,
     );
 
     const dpr = Math.max(2, window.devicePixelRatio || 1);
@@ -479,7 +485,7 @@ export class Island {
     this.islandEl.style.transform = `translateX(-50%)`;
     // These follow the island as it resizes, so they belong here rather than in
     // the state-driven DOM sync.
-    this.miniGrid.style.left = `${w - 40 - 14.5}px`;
+    this.miniGrid.style.left = `${w - 46 - 14.5}px`;
     this.miniGrid.style.top = `${hh / 2 - 14.5}px`;
     this.greetingCanvas.style.left = `${(w - EXPANDED_W) / 2}px`;
     this.uploadCanvas.el.style.left = `${(w - EXPANDED_W) / 2}px`;
@@ -656,6 +662,43 @@ export class Island {
       }
       this.engine.triggerEmote("happy");
     }, 3300);
+  }
+
+  // ── Resting moods ───────────────────────────────────────────────────────────
+
+  /**
+   * While the compact island sits idle, Mochi now and then lets out a little
+   * emotion — hearts, notes, sparks, stars — and z's once the user has been away
+   * for the absence interval.
+   */
+  private restingMoodTick() {
+    const now = performance.now();
+    if (now < this.nextMoodAt) return;
+    const busy = State.tasks.some((t) =>
+      ["working", "thinking", "searching", "question", "approval"].includes(t.state),
+    );
+    if (State.paused || State.mode !== "compact" || busy || document.hidden) {
+      this.nextMoodAt = now + 4000;
+      return;
+    }
+    const away = now - State.lastActivity;
+    const mood = pickMood(away, State.settings.absenceInterval * 1000);
+    this.playMood(mood, mood === "sleepy" ? 3 : 2 + Math.round(Math.random()));
+    this.nextMoodAt = now + (mood === "sleepy" ? 9000 : 9000 + Math.random() * 9000);
+  }
+
+  private playMood(mood: MoodKind, count: number) {
+    const emote = mood === "sleepy" ? "yawn" : mood;
+    this.engine.triggerEmote(emote, 1.6);
+    this.ensureRunning();
+    this.moods.burst(mood, this.botCx.value, this.height.value - 2, count);
+  }
+
+  /** Claude finished: a small burst of stars, whatever the island is showing. */
+  celebrate() {
+    if (State.mode === "hidden") return;
+    this.playMood("proud", 4);
+    this.nextMoodAt = performance.now() + 12000;
   }
 
   // ── Frame loop ──────────────────────────────────────────────────────────────

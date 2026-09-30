@@ -55,11 +55,11 @@ export const PANEL_H = 320;
 
 // No notch on a PC: these are the hidden/compact sizes from docs/SPEC.md.
 export const NOTCH_W = 184;
-export const NOTCH_H = 32;
-export const COMPACT_W = 288; // NOTCH_W + 104
+export const NOTCH_H = 40;
+export const COMPACT_W = 300; // NOTCH_W + 116
 export const EXPANDED_W = 640;
 
-export const ROUNDED_CORNER = 14; // hidden / compact
+export const ROUNDED_CORNER = 18; // hidden / compact
 export const EXPANDED_CORNER = 22;
 
 /** Invisible hover strip that wakes the island when hidden. */
@@ -134,7 +134,7 @@ export function botPosition(
     case "hidden":
       return { cx: 46, cy: 16, diameter: 6, opacity: 0 };
     case "compact":
-      return { cx: 40, cy: 16, diameter: 20, opacity: 1 };
+      return { cx: 46, cy: NOTCH_H / 2, diameter: 22, opacity: 1 };
     case "expanded": {
       const layout = VIEW_LAYOUTS[view];
       if (view === "uploading") {

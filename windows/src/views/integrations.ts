@@ -174,6 +174,43 @@ function vercelDetail(onBack: () => void): HTMLElement {
   );
 }
 
+// ── Agentation ────────────────────────────────────────────────────────────────
+
+function agentationCard(): HTMLElement {
+  const accent = "#EC4899";
+  const d = get("integration_agentation");
+  if (d.running === false) {
+    return h(
+      "div",
+      { class: "int-card" },
+      header(accent, "Agentation", "Annotations"),
+      h("div", { class: "int-rows" }, listRow("#8e939c", true,
+        h("span", { class: "int-name", text: "Server not running" }),
+        h("span", { class: "int-sub", text: "npx agentation-mcp server" }),
+      )),
+    );
+  }
+  const count = Number(d.count ?? 0);
+  const extra = h("span", { class: "int-total" },
+    count > 0 ? h("i", { class: "pulse" }) : h("i"),
+    h("span", { text: `${count} pending` }),
+  );
+  const rows = h("div", { class: "int-rows" });
+  const list = arr("integration_agentation", "annotations");
+  if (list.length === 0) {
+    rows.append(listRow("#22C55E", true, h("span", { class: "int-name", text: "All clear" })));
+  }
+  list.slice(0, 3).forEach((a, i) => {
+    const cells: Node[] = [
+      h("span", { class: "int-name", text: String(a.element || "element") }),
+      h("span", { class: "int-ago", text: timeAgo(a.timestamp) }),
+    ];
+    if (a.comment) cells.push(h("span", { class: "int-sub", text: String(a.comment) }));
+    rows.append(listRow(accent, i === 0, ...cells));
+  });
+  return h("div", { class: "int-card" }, header(accent, "Agentation", "Annotations", extra), rows);
+}
+
 // ── Resend ────────────────────────────────────────────────────────────────────
 
 function resendCard(): HTMLElement {
@@ -398,6 +435,8 @@ export function hasIntegrationData(id: string): boolean {
       return arr(id, "pages").length > 0;
     case "integration_calcom":
       return info.loaded;
+    case "integration_agentation":
+      return info.loaded;
     default:
       return false;
   }
@@ -426,6 +465,8 @@ export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHoo
       return notionCard();
     case "integration_calcom":
       return calcomCard();
+    case "integration_agentation":
+      return agentationCard();
     default:
       return idleCard(task, hooks.openSettings);
   }

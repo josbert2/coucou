@@ -22,6 +22,10 @@ Otros cambios:
 
 - **Chat sin API key**: si no hay key guardada, el chat usa el CLI de Claude Code (`claude -p`), con tu suscripción. Aplica también en Windows.
 - **Canvas a 2x**: Mochi y las pills se dibujan siempre a 2x como mínimo, así se ven nítidos en pantallas de escala 1.
+- **Isla compacta con más aire**: 40 px de alto (antes 32) y más margen a los costados.
+- **Aviso al terminar**: cuando un turno de Claude dura 20 s o más y la isla no está abierta, sale una notificación del escritorio (`notify-send`) con el final de la respuesta.
+- **Pill de Agentation**: lee las anotaciones pendientes del servidor local `agentation-mcp` (`localhost:4747/pending`), muestra cuántas hay y avisa cuando entra una nueva. No necesita key.
+- **Emociones en reposo**: con la isla compacta y sin trabajo, Mochi suelta de vez en cuando corazones, notas, destellos o estrellas por debajo de la barra (`src/mochi/moods.ts`). Después de un rato sin actividad bosteza y le salen z's. Cuando Claude termina, estrellas.
 
 ## Correrlo
 

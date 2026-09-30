@@ -37,6 +37,11 @@ export async function refreshConfigured() {
     data: {}, error: null, loaded: false, configured: false,
   };
   State.integrations.integration_claude = { ...claude, configured: hooks };
+  // Agentation needs no key: it is the local agentation-mcp server.
+  const agentation = State.integrations.integration_agentation ?? {
+    data: {}, error: null, loaded: false, configured: true,
+  };
+  State.integrations.integration_agentation = { ...agentation, configured: true };
   State.notify();
 }
 

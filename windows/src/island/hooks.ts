@@ -13,6 +13,15 @@ const CLAUDE_ID = "integration_claude";
 /** Clears the approval card if no decision was made before the hook gave up. */
 let pendingTimeout: number | null = null;
 
+/** When the current Claude turn started, for the "finished while away" notice. */
+let turnStartedAt = 0;
+/**
+ * A turn at least this long gets a desktop notification when it ends. Wayland
+ * will not say which window has focus, so duration stands in for "you looked
+ * away": a quick answer was almost certainly watched.
+ */
+const LONG_TURN_MS = 20_000;
+
 interface HookPayload {
   hook_event_name?: string;
   request_id?: string;
@@ -21,6 +30,8 @@ interface HookPayload {
   message?: string;
   /** UserPromptSubmit carries `prompt`; `message` belongs to Notification/Stop. */
   prompt?: string;
+  /** Stop carries Claude's final reply here in recent Claude Code versions. */
+  last_assistant_message?: string;
   tool_name?: string;
   tool_input?: Record<string, unknown>;
 }
@@ -157,6 +168,7 @@ function handleHook(island: Island, payload: HookPayload) {
     case "UserPromptSubmit": {
       upsert(projectName, cwd);
       State.updateTask(CLAUDE_ID, "thinking");
+      turnStartedAt = performance.now();
       // The field is `prompt`; reading `message` meant this step was always blank.
       const asked = payload.prompt ?? payload.message;
       if (asked) State.appendStep(CLAUDE_ID, asked.slice(0, 60));
@@ -195,10 +207,19 @@ function handleHook(island: Island, payload: HookPayload) {
       break;
     }
 
-    case "Stop":
+    case "Stop": {
       State.updateTask(CLAUDE_ID, "finished");
       if (payload.message) State.appendStep(CLAUDE_ID, payload.message.slice(0, 60));
       Sound.play("finish");
+      island.celebrate();
+      const took = turnStartedAt ? performance.now() - turnStartedAt : 0;
+      turnStartedAt = 0;
+      if (took >= LONG_TURN_MS && State.mode !== "expanded") {
+        const reply = (payload.last_assistant_message ?? payload.message ?? "").replace(/\s+/g, " ").trim();
+        const secs = Math.round(took / 1000);
+        const time = secs >= 60 ? `${Math.floor(secs / 60)} min ${secs % 60} s` : `${secs} s`;
+        void Bridge.notify(`Claude terminó · ${projectName}`, reply || `Listo, tardó ${time}.`);
+      }
       if (focused) surface("finished", true);
       else State.setPillBadge(CLAUDE_ID, "finished");
       window.setTimeout(() => {
@@ -206,6 +227,7 @@ function handleHook(island: Island, payload: HookPayload) {
         State.setPillBadge(CLAUDE_ID, null);
       }, 5200);
       break;
+    }
 
     case "StopFailure":
       State.updateTask(CLAUDE_ID, "error");

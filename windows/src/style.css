@@ -82,6 +82,41 @@ body {
   border-radius: inherit;
 }
 
+/* Resting moods (src/mochi/moods.ts): particles that fall out from under the bar. */
+#mood-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.mood-p {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+  animation: mood-float 1.9s cubic-bezier(0.22, 0.8, 0.3, 1) forwards;
+}
+
+.mood-p > * {
+  display: block;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.45));
+}
+
+@keyframes mood-float {
+  0% {
+    opacity: 0;
+    transform: translate(0, -4px) scale(0.4) rotate(0deg);
+  }
+  18% {
+    opacity: 1;
+    transform: translate(calc(var(--dx) * 0.2), calc(var(--dy) * 0.25)) scale(1) rotate(calc(var(--rot) * 0.3));
+  }
+  100% {
+    opacity: 0;
+    transform: translate(var(--dx), var(--dy)) scale(0.85) rotate(var(--rot));
+  }
+}
+
 #bot-canvas,
 #greeting-canvas {
   position: absolute;

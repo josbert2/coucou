@@ -68,7 +68,8 @@ pub fn start(app: AppHandle) {
     spawn(app.clone(), "integration_resend", 6, 60, poll_resend);
     spawn(app.clone(), "integration_github", 7, 300, poll_github);
     spawn(app.clone(), "integration_calcom", 8, 300, poll_calcom);
-    spawn(app, "integration_notion", 9, 300, poll_notion);
+    spawn(app.clone(), "integration_notion", 9, 300, poll_notion);
+    spawn(app, "integration_agentation", 2, 5, poll_agentation);
 }
 
 /// True when the user has this integration switched on in settings.
@@ -113,6 +114,7 @@ pub async fn poll_once(app: AppHandle, id: &str) {
         "integration_resend" => poll_resend(app).await,
         "integration_notion" => poll_notion(app).await,
         "integration_calcom" => poll_calcom(app).await,
+        "integration_agentation" => poll_agentation(app).await,
         _ => {}
     }
 }
@@ -449,6 +451,101 @@ async fn poll_resend(app: AppHandle) {
         data: json!({ "emails": emails, "total": total }),
         error: None,
         event: None,
+    });
+}
+
+// ── Agentation ────────────────────────────────────────────────────────────────
+
+/// The local agentation-mcp HTTP server. Loopback only: nothing leaves the machine.
+const AGENTATION_URL: &str = "http://127.0.0.1:4747";
+
+/// Pending annotation ids already seen, so only new ones make a sound. `None`
+/// until the first successful poll, which seeds it silently.
+static AGENTATION_SEEN: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
+
+async fn poll_agentation(app: AppHandle) {
+    let response = client()
+        .get(format!("{AGENTATION_URL}/pending"))
+        .timeout(Duration::from_secs(3))
+        .send()
+        .await;
+    let response = match response {
+        Ok(r) if r.status().is_success() => r,
+        _ => {
+            // Not running is a normal state, not an error worth a red pill.
+            *AGENTATION_SEEN.lock().unwrap() = None;
+            emit(&app, IntegrationUpdate {
+                id: "integration_agentation",
+                data: json!({ "running": false }),
+                error: None,
+                event: None,
+            });
+            return;
+        }
+    };
+    let json: Value = response.json().await.unwrap_or(json!({}));
+    let list: Vec<Value> = json
+        .get("annotations")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    // Newest first, trimmed to what the card shows.
+    let mut items: Vec<(i64, Value)> = list
+        .iter()
+        .filter_map(|a| {
+            let id = a.get("id")?.as_str()?.to_string();
+            let ts = a.get("timestamp").and_then(Value::as_i64).unwrap_or(0);
+            Some((ts, json!({
+                "id": id,
+                "comment": a.get("comment").and_then(Value::as_str).unwrap_or(""),
+                "element": a.get("element").and_then(Value::as_str).unwrap_or(""),
+                "timestamp": ts,
+            })))
+        })
+        .collect();
+    items.sort_by(|a, b| b.0.cmp(&a.0));
+    let annotations: Vec<Value> = items.iter().take(5).map(|(_, v)| v.clone()).collect();
+
+    let ids: std::collections::HashSet<String> = items
+        .iter()
+        .filter_map(|(_, v)| v.get("id").and_then(Value::as_str).map(str::to_string))
+        .collect();
+    let fresh: Vec<&Value> = {
+        let mut seen = AGENTATION_SEEN.lock().unwrap();
+        let fresh = match seen.as_ref() {
+            Some(old) => items
+                .iter()
+                .map(|(_, v)| v)
+                .filter(|v| v.get("id").and_then(Value::as_str).is_some_and(|id| !old.contains(id)))
+                .collect(),
+            None => Vec::new(),
+        };
+        *seen = Some(ids);
+        fresh
+    };
+
+    let event = fresh.first().map(|newest| {
+        let comment = newest.get("comment").and_then(Value::as_str).unwrap_or("");
+        let label = if fresh.len() == 1 {
+            "New annotation".to_string()
+        } else {
+            format!("{} new annotations", fresh.len())
+        };
+        log::line(format!("agentation: {label}"));
+        IntegrationEvent {
+            success: true,
+            label,
+            detail: Some(comment.chars().take(80).collect()),
+        }
+    });
+
+    let count = json.get("count").and_then(Value::as_i64).unwrap_or(list.len() as i64);
+    emit(&app, IntegrationUpdate {
+        id: "integration_agentation",
+        data: json!({ "running": true, "count": count, "annotations": annotations }),
+        error: None,
+        event,
     });
 }
 
