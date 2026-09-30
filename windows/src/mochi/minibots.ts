@@ -30,7 +30,7 @@ export function createMiniBot(task: AgentTask, bodySize: number): HTMLElement {
 
   const canvas = document.createElement("canvas");
   const engineSize = bodySize / 0.6;
-  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const dpr = Math.max(2, window.devicePixelRatio || 1);
   canvas.width = Math.round(engineSize * dpr);
   canvas.height = Math.round(engineSize * dpr);
   canvas.style.width = `${engineSize}px`;
@@ -73,7 +73,7 @@ export function syncMiniBotStates(tasks: AgentTask[]) {
 }
 
 export function tickMiniBots(dt: number) {
-  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const dpr = Math.max(2, window.devicePixelRatio || 1);
   for (const mb of live.values()) {
     const ctx = mb.canvas.getContext("2d");
     if (!ctx) continue;

@@ -4,6 +4,12 @@
 // There is no notch on a PC, so the island is a black shape drawn at the top
 // centre of the main display inside a borderless, transparent, always-on-top
 // window that never takes focus.
+//
+// Linux runs the window under X11 (XWayland on a Wayland session, see main.rs):
+// Wayland lets no client place itself or stay on top. Click-through there is a
+// GTK input shape the size of the island rather than a flag flipped from the
+// cursor poll, because XWayland only reports the pointer while it is over one
+// of our own windows.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -12,12 +18,19 @@ use std::time::Duration;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, Monitor, PhysicalPosition, PhysicalSize, WebviewWindow};
 
+#[cfg(windows)]
 use windows::Win32::Foundation::{HWND, POINT};
+#[cfg(windows)]
 use windows::core::BOOL;
+#[cfg(windows)]
 use windows::Win32::Foundation::LPARAM;
+#[cfg(windows)]
 use windows::Win32::System::Ole::RevokeDragDrop;
+#[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{EnumChildWindows, GetClassNameW};
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_NOACTIVATE,
     WS_EX_TOOLWINDOW,
@@ -70,6 +83,9 @@ pub struct PollGate {
     pub rect: Mutex<IslandRect>,
     /// Mirrors the window flag so we only call into Win32 when it changes.
     ignoring: AtomicBool,
+    /// Linux: the input region last handed to GTK, so we only set it on change.
+    #[cfg(target_os = "linux")]
+    region: Mutex<Option<(i32, i32, i32, i32)>>,
 }
 
 impl PollGate {
@@ -80,6 +96,8 @@ impl PollGate {
             collapsed: AtomicBool::new(true),
             rect: Mutex::new(IslandRect::default()),
             ignoring: AtomicBool::new(false),
+            #[cfg(target_os = "linux")]
+            region: Mutex::new(None),
         }
     }
 
@@ -90,6 +108,10 @@ impl PollGate {
     /// Forces the next poll tick to re-apply the flag (after a window resize).
     pub fn forget_ignore_state(&self) {
         self.ignoring.store(false, Ordering::Relaxed);
+        #[cfg(target_os = "linux")]
+        {
+            *self.region.lock().unwrap() = None;
+        }
     }
 
     pub fn set_active(&self, on: bool) {
@@ -114,10 +136,17 @@ pub fn window(app: &AppHandle) -> Option<WebviewWindow> {
     app.get_webview_window(WINDOW_LABEL)
 }
 
-fn cursor_physical() -> Option<(f64, f64)> {
+#[cfg(windows)]
+fn cursor_physical(_app: &AppHandle) -> Option<(f64, f64)> {
     let mut p = POINT::default();
     unsafe { GetCursorPos(&mut p).ok()? };
     Some((p.x as f64, p.y as f64))
+}
+
+#[cfg(not(windows))]
+fn cursor_physical(app: &AppHandle) -> Option<(f64, f64)> {
+    let p = app.cursor_position().ok()?;
+    Some((p.x, p.y))
 }
 
 /// Lets dropped files reach the app again.
@@ -131,6 +160,7 @@ fn cursor_physical() -> Option<(f64, f64)> {
 /// that feeds Tauri's drag events.
 ///
 /// Cheap and idempotent, so it is simply re-run whenever a drag might be starting.
+#[cfg(windows)]
 pub fn unblock_webview_drops(app: &AppHandle) {
     for label in [WINDOW_LABEL, "settings"] {
         let Some(win) = app.get_webview_window(label) else { continue };
@@ -141,6 +171,7 @@ pub fn unblock_webview_drops(app: &AppHandle) {
     }
 }
 
+#[cfg(windows)]
 unsafe extern "system" fn revoke_render_widget(hwnd: HWND, _: LPARAM) -> BOOL {
     let mut name = [0u16; 64];
     let len = unsafe { GetClassNameW(hwnd, &mut name) };
@@ -155,6 +186,7 @@ unsafe extern "system" fn revoke_render_widget(hwnd: HWND, _: LPARAM) -> BOOL {
 
 /// True while the left mouse button is held — the only signal we get that a
 /// drag might be in flight before it reaches the window.
+#[cfg(windows)]
 fn left_button_down() -> bool {
     unsafe { (GetAsyncKeyState(VK_LBUTTON.0 as i32) as u16 & 0x8000) != 0 }
 }
@@ -172,7 +204,7 @@ fn monitor_contains(m: &Monitor, x: f64, y: f64) -> bool {
 fn target_monitor(app: &AppHandle, pref: &str) -> Option<Monitor> {
     let monitors = app.available_monitors().ok()?;
     if pref == "cursor" {
-        if let Some((cx, cy)) = cursor_physical() {
+        if let Some((cx, cy)) = cursor_physical(app) {
             if let Some(m) = monitors.iter().find(|m| monitor_contains(m, cx, cy)) {
                 return Some(m.clone());
             }
@@ -224,6 +256,7 @@ pub fn apply_geometry(app: &AppHandle, pref: &str, collapsed: bool) {
     let _ = win.set_always_on_top(true);
 }
 
+#[cfg(windows)]
 fn hwnd_of(win: &WebviewWindow) -> Option<HWND> {
     let raw = win.hwnd().ok()?.0 as isize;
     if raw == 0 {
@@ -234,6 +267,7 @@ fn hwnd_of(win: &WebviewWindow) -> Option<HWND> {
 
 /// WS_EX_NOACTIVATE keeps clicks from stealing focus; WS_EX_TOOLWINDOW keeps the
 /// island out of Alt-Tab.
+#[cfg(windows)]
 pub fn make_non_activating(win: &WebviewWindow) {
     let Some(hwnd) = hwnd_of(win) else { return };
     unsafe {
@@ -244,6 +278,7 @@ pub fn make_non_activating(win: &WebviewWindow) {
 }
 
 /// Temporarily allow activation so a text field inside the island can be typed in.
+#[cfg(windows)]
 pub fn set_activating(win: &WebviewWindow, activating: bool) {
     let Some(hwnd) = hwnd_of(win) else { return };
     unsafe {
@@ -255,6 +290,62 @@ pub fn set_activating(win: &WebviewWindow, activating: bool) {
         };
         SetWindowLongPtrW(hwnd, GWL_EXSTYLE, want);
     }
+}
+
+/// GTK equivalent: no focus on click, out of the taskbar, the pager and Alt-Tab,
+/// above everything, on every workspace.
+#[cfg(target_os = "linux")]
+pub fn make_non_activating(win: &WebviewWindow) {
+    use gtk::prelude::*;
+    let Ok(gtk_win) = win.gtk_window() else { return };
+    gtk_win.set_accept_focus(false);
+    gtk_win.set_focus_on_map(false);
+    gtk_win.set_skip_taskbar_hint(true);
+    gtk_win.set_skip_pager_hint(true);
+    gtk_win.set_keep_above(true);
+    gtk_win.stick();
+}
+
+#[cfg(target_os = "linux")]
+pub fn set_activating(win: &WebviewWindow, activating: bool) {
+    use gtk::prelude::*;
+    let win = win.clone();
+    let _ = win.clone().run_on_main_thread(move || {
+        if let Ok(gtk_win) = win.gtk_window() {
+            gtk_win.set_accept_focus(activating);
+        }
+    });
+}
+
+/// Linux click-through: only the island shape (plus the hit margin) takes the
+/// mouse, everything else in the window falls through to what is underneath.
+#[cfg(target_os = "linux")]
+pub fn apply_input_region(app: &AppHandle, gate: &PollGate) {
+    let r = *gate.rect.lock().unwrap();
+    let region = if r.w > 0.0 {
+        let x = (r.x - HIT_MARGIN).floor().max(0.0) as i32;
+        let y = (r.y - HIT_MARGIN).floor().max(0.0) as i32;
+        let w = (r.w + 2.0 * HIT_MARGIN).ceil() as i32;
+        let h = (r.h + 2.0 * HIT_MARGIN).ceil() as i32;
+        (x, y, w, h)
+    } else {
+        (0, 0, 0, 0)
+    };
+    {
+        let mut last = gate.region.lock().unwrap();
+        if *last == Some(region) {
+            return;
+        }
+        *last = Some(region);
+    }
+    let Some(win) = window(app) else { return };
+    let _ = app.run_on_main_thread(move || {
+        use gtk::prelude::*;
+        let Ok(gtk_win) = win.gtk_window() else { return };
+        let (x, y, w, h) = region;
+        let shape = gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(x, y, w, h));
+        gtk_win.input_shape_combine_region(Some(&shape));
+    });
 }
 
 /// Position, size and scale of the monitor the island lives on. Any change here
@@ -274,6 +365,7 @@ fn current_screen_key(app: &AppHandle) -> Option<(i32, i32, u32, u32, u64)> {
 /// visible. Parked on a condvar the rest of the time.
 pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
     std::thread::spawn(move || {
+        #[cfg_attr(not(windows), allow(unused))]
         let mut was_down = false;
         // Remembered across wakes so a display change while hidden is noticed the
         // moment the island comes back.
@@ -305,17 +397,22 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
                 let Some(win) = window(&app) else { continue };
                 let Ok(origin) = win.outer_position() else { continue };
                 let scale = win.scale_factor().unwrap_or(1.0);
-                let Some((cx, cy)) = cursor_physical() else { continue };
+                let Some((cx, cy)) = cursor_physical(&app) else { continue };
                 let x = (cx - origin.x as f64) / scale;
                 let y = (cy - origin.y as f64) / scale;
-                let size = match win.inner_size() {
-                    Ok(s) => (s.width as f64 / scale, s.height as f64 / scale),
-                    Err(_) => (PANEL_W, PANEL_H),
-                };
                 if (x - last.0).abs() < 1.0 && (y - last.1).abs() < 1.0 {
                     continue;
                 }
                 last = (x, y);
+
+                // Linux click-through is the input shape set from the island
+                // rect (apply_input_region), so the poll only reports the cursor.
+                #[cfg(windows)]
+                {
+                let size = match win.inner_size() {
+                    Ok(s) => (s.width as f64 / scale, s.height as f64 / scale),
+                    Err(_) => (PANEL_W, PANEL_H),
+                };
 
                 // Click-through: the window only takes the mouse over the island
                 // shape. A small entry margin means the flag is already off by the
@@ -353,6 +450,7 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
                 if gate.ignoring.load(Ordering::Relaxed) == accept {
                     gate.ignoring.store(!accept, Ordering::Relaxed);
                     let _ = win.set_ignore_cursor_events(!accept);
+                }
                 }
 
                 let _ = win.emit("cursor", CursorPayload { x, y });

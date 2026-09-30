@@ -14,7 +14,6 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use tauri::{AppHandle, Manager};
-use windows::Win32::System::SystemInformation::GetLocalTime;
 
 use crate::settings;
 
@@ -58,8 +57,11 @@ pub struct HookPreview {
     pub fingerprint: String,
 }
 
+/// The variable that holds the user's home folder on this platform.
+const HOME_VAR: &str = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+
 fn home() -> PathBuf {
-    std::env::var_os("USERPROFILE")
+    std::env::var_os(HOME_VAR)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
 }
@@ -197,11 +199,8 @@ fn pretty(v: &Value) -> String {
 /// Down to the second: installing then uninstalling in the same minute must not
 /// quietly overwrite the first backup.
 fn stamp() -> String {
-    let t = unsafe { GetLocalTime() };
-    format!(
-        "{:04}{:02}{:02}-{:02}{:02}{:02}",
-        t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond
-    )
+    let (y, mo, d, h, mi, s) = crate::clock::local_now();
+    format!("{y:04}{mo:02}{d:02}-{h:02}{mi:02}{s:02}")
 }
 
 fn backup_path() -> PathBuf {
@@ -320,17 +319,17 @@ pub fn ensure_hook_exe(app: &AppHandle) {
     }
 
     let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Ok(p) = app.path().resolve("coucou-hook.exe", tauri::path::BaseDirectory::Resource) {
+    if let Ok(p) = app.path().resolve(settings::HOOK_BIN, tauri::path::BaseDirectory::Resource) {
         candidates.push(p);
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
             // Installed build, then `tauri dev` (target/debug) next to the
             // release hook the pre-build step produces.
-            candidates.push(parent.join("coucou-hook.exe"));
-            candidates.push(parent.join("../release/coucou-hook.exe"));
+            candidates.push(parent.join(settings::HOOK_BIN));
+            candidates.push(parent.join("../release").join(settings::HOOK_BIN));
             // Belt and braces: where the old glob form used to land it.
-            candidates.push(parent.join("_up_/target/release/coucou-hook.exe"));
+            candidates.push(parent.join("_up_/target/release").join(settings::HOOK_BIN));
         }
     }
 
@@ -518,7 +517,7 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("coucou-hooks-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(tmp.join(".claude")).unwrap();
-        std::env::set_var("USERPROFILE", &tmp);
+        std::env::set_var(HOME_VAR, &tmp);
 
         let path = settings_path();
         assert!(path.starts_with(&tmp), "the test must not touch the real home");

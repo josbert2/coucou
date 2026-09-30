@@ -102,7 +102,7 @@ export class UploadCanvas {
 
   /** `wallTime` in seconds drives the marching dashes, like the macOS timeline. */
   draw(f: UploadFrame, wallTime: number) {
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const dpr = Math.max(2, window.devicePixelRatio || 1);
     if (this.sizedFor !== dpr) {
       this.sizedFor = dpr;
       this.canvas.width = Math.round(USC.W * dpr);

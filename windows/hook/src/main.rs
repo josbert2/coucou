@@ -1,7 +1,8 @@
 //! coucou-hook — the relay Claude Code runs on every hook event.
 //!
 //! Reads the hook JSON on stdin, adds a little terminal context, and hands it to
-//! Coucou over the named pipe `\\.\pipe\coucou-<sid>`.
+//! Coucou over the named pipe `\\.\pipe\coucou-<sid>` (Windows) or the Unix
+//! socket `$XDG_RUNTIME_DIR/coucou.sock` (Linux).
 //!
 //! Hard rule (docs/CLAUDE.md): **never block Claude Code.**
 //! * If the pipe does not exist — Coucou is closed — we exit 0 immediately with
@@ -17,7 +18,9 @@
 
 use std::io::{Read, Write};
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(windows)]
+use std::time::Instant;
 
 /// Budget for getting a pipe connection. Beyond this Claude Code wins, always.
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(300);
@@ -26,6 +29,7 @@ const FIRE_AND_FORGET_BUDGET: Duration = Duration::from_secs(2);
 /// How long a permission prompt may stay on screen before the terminal takes over.
 const DECISION_BUDGET: Duration = Duration::from_secs(110);
 
+#[cfg(windows)]
 /// `ERROR_PIPE_BUSY` — every instance is serving someone else right now. This is
 /// the one error worth retrying: the server exists and a slot will free up.
 const ERROR_PIPE_BUSY: i32 = 231;
@@ -37,11 +41,13 @@ const DROPPED_FIELDS: &[&str] = &["tool_response", "transcript_path"];
 /// less than this anyway.
 const MAX_FIELD_LEN: usize = 2_000;
 
+#[cfg(windows)]
 mod win;
 
 /// `\\.\pipe\coucou-<sid>`. The SID keeps two accounts on the same machine from
 /// ever meeting on the same pipe; the name falls back to the user name only if
 /// the SID cannot be read at all, which should not happen.
+#[cfg(windows)]
 fn pipe_path() -> String {
     let key = win::current_user_sid()
         .unwrap_or_else(|| std::env::var("USERNAME").unwrap_or_else(|_| "user".into()));
@@ -50,6 +56,7 @@ fn pipe_path() -> String {
 
 /// Opens the pipe. Retries only while the server is busy: any other error means
 /// there is nothing to talk to, and waiting would only delay Claude Code.
+#[cfg(windows)]
 fn connect() -> Option<std::fs::File> {
     use std::os::windows::io::AsRawHandle;
     let path = pipe_path();
@@ -69,6 +76,36 @@ fn connect() -> Option<std::fs::File> {
             }
         }
     }
+}
+
+/// `$XDG_RUNTIME_DIR/coucou.sock` — must match the app's `pipe::socket_path()`.
+#[cfg(unix)]
+fn socket_path() -> std::path::PathBuf {
+    match std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
+        Some(dir) => std::path::PathBuf::from(dir).join("coucou.sock"),
+        None => std::env::temp_dir().join(format!("coucou-{}.sock", unsafe { libc::getuid() })),
+    }
+}
+
+/// Opens the socket. A missing socket or a refused connection means Coucou is
+/// closed: give up at once. The listener must run as us, or it gets nothing.
+#[cfg(unix)]
+fn connect() -> Option<std::os::unix::net::UnixStream> {
+    use std::os::unix::io::AsRawFd;
+    let stream = std::os::unix::net::UnixStream::connect(socket_path()).ok()?;
+    let _ = stream.set_write_timeout(Some(CONNECT_TIMEOUT));
+    let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    let ok = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&mut cred as *mut libc::ucred).cast(),
+            &mut len,
+        )
+    } == 0;
+    (ok && cred.uid == unsafe { libc::getuid() }).then_some(stream)
 }
 
 fn main() {

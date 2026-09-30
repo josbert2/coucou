@@ -1,6 +1,7 @@
-// Coucou for Windows — app wiring and the commands the island calls.
+// Coucou for Windows and Linux — app wiring and the commands the island calls.
 
 mod claude;
+mod clock;
 mod files;
 mod hooks;
 mod integrations;
@@ -10,8 +11,10 @@ mod pipe;
 mod secrets;
 mod settings;
 mod tray;
+#[cfg(windows)]
 mod win_user;
 
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::process::Command;
 use std::sync::atomic::Ordering;
@@ -29,6 +32,7 @@ use pipe::Pending;
 use settings::Settings;
 
 /// Keeps spawned helpers from flashing a console window.
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 pub struct Shared {
@@ -96,13 +100,22 @@ fn set_collapsed(app: AppHandle, shared: State<Shared>, collapsed: bool) {
     // The wake strip must always take the mouse, and a resize invalidates the flag.
     island::set_ignore_cursor(&app, false);
     shared.gate.forget_ignore_state();
+    #[cfg(target_os = "linux")]
+    if !collapsed {
+        island::apply_input_region(&app, &shared.gate);
+    }
     shared.gate.set_active(!collapsed);
 }
 
 /// The front end pushes the island shape; Rust decides click-through from it.
 #[tauri::command]
-fn set_island_rect(shared: State<Shared>, x: f64, y: f64, width: f64, height: f64) {
+fn set_island_rect(app: AppHandle, shared: State<Shared>, x: f64, y: f64, width: f64, height: f64) {
     shared.gate.set_rect(island::IslandRect { x, y, w: width, h: height });
+    #[cfg(target_os = "linux")]
+    if !shared.gate.collapsed.load(Ordering::Relaxed) {
+        island::apply_input_region(&app, &shared.gate);
+    }
+    let _ = app;
 }
 
 #[tauri::command]
@@ -126,10 +139,13 @@ fn open_url(url: String) {
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return;
     }
+    #[cfg(windows)]
     let _ = Command::new("rundll32.exe")
         .args(["url.dll,FileProtocolHandler", &url])
         .creation_flags(CREATE_NO_WINDOW)
         .spawn();
+    #[cfg(unix)]
+    let _ = Command::new("xdg-open").arg(&url).spawn();
 }
 
 /// "Open terminal" opens the working folder in VS Code when `code` is on PATH,
@@ -145,17 +161,21 @@ fn open_in_vscode(path: Option<String>) -> bool {
         if let Some(p) = path.as_deref().filter(|p| !p.is_empty()) {
             cmd.arg(p);
         }
-        if cmd.creation_flags(CREATE_NO_WINDOW).spawn().is_ok() {
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        if cmd.spawn().is_ok() {
             return true;
         }
     }
     if let Some(p) = path.as_deref().filter(|p| !p.is_empty()) {
-        let _ = Command::new("explorer").arg(p).spawn();
+        let opener = if cfg!(windows) { "explorer" } else { "xdg-open" };
+        let _ = Command::new(opener).arg(p).spawn();
     }
     false
 }
 
 /// Our own `where`: walks %PATH% against %PATHEXT%, no shell involved.
+#[cfg(windows)]
 /// Rust quotes arguments correctly for `.cmd`/`.bat` targets since 1.77, so
 /// spawning `code.cmd` directly is safe.
 fn find_on_path(stem: &str) -> Option<std::path::PathBuf> {
@@ -170,6 +190,20 @@ fn find_on_path(stem: &str) -> Option<std::path::PathBuf> {
         }
     }
     None
+}
+
+/// Our own `which`: the first executable file called `stem` on $PATH.
+#[cfg(unix)]
+pub(crate) fn find_on_path(stem: &str) -> Option<std::path::PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let dirs = std::env::var_os("PATH")?;
+    std::env::split_paths(&dirs)
+        .map(|dir| dir.join(stem))
+        .find(|p| {
+            std::fs::metadata(p)
+                .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+                .unwrap_or(false)
+        })
 }
 
 #[tauri::command]
@@ -419,6 +453,8 @@ pub fn run() {
                 island::apply_geometry(&handle, &loaded.screen, false);
                 let _ = win.show();
             }
+            #[cfg(target_os = "linux")]
+            island::apply_input_region(&handle, &gate);
             gate.collapsed.store(false, Ordering::Relaxed);
             gate.set_active(true);
             island::spawn_cursor_poll(handle.clone(), gate.clone());

@@ -47,7 +47,11 @@ impl Default for Settings {
     }
 }
 
-/// %APPDATA%\Coucou
+/// File name of the relay Claude Code runs.
+pub const HOOK_BIN: &str = if cfg!(windows) { "coucou-hook.exe" } else { "coucou-hook" };
+
+/// %APPDATA%\Coucou on Windows, $XDG_CONFIG_HOME/coucou on Linux.
+#[cfg(windows)]
 pub fn config_dir() -> PathBuf {
     let base = std::env::var_os("APPDATA")
         .map(PathBuf::from)
@@ -55,7 +59,14 @@ pub fn config_dir() -> PathBuf {
     base.join("Coucou")
 }
 
-/// %LOCALAPPDATA%\Coucou — where coucou-hook.exe and the log live.
+#[cfg(unix)]
+pub fn config_dir() -> PathBuf {
+    xdg_dir("XDG_CONFIG_HOME", ".config").join("coucou")
+}
+
+/// %LOCALAPPDATA%\Coucou on Windows, $XDG_DATA_HOME/coucou on Linux — where the
+/// relay, the log and the inbox live.
+#[cfg(windows)]
 pub fn local_dir() -> PathBuf {
     let base = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
@@ -63,8 +74,26 @@ pub fn local_dir() -> PathBuf {
     base.join("Coucou")
 }
 
+#[cfg(unix)]
+pub fn local_dir() -> PathBuf {
+    xdg_dir("XDG_DATA_HOME", ".local/share").join("coucou")
+}
+
+#[cfg(unix)]
+fn xdg_dir(var: &str, fallback: &str) -> PathBuf {
+    std::env::var_os(var)
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(fallback)
+        })
+}
+
 pub fn hook_exe_path() -> PathBuf {
-    local_dir().join("bin").join("coucou-hook.exe")
+    local_dir().join("bin").join(HOOK_BIN)
 }
 
 fn settings_path() -> PathBuf {

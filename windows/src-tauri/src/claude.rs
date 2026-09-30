@@ -3,6 +3,9 @@
 //
 // Everything happens here rather than in the island: the API key never leaves
 // the Credential Manager, and file bytes never cross the IPC boundary.
+//
+// Without an API key the chat falls back to the Claude Code CLI (`claude -p`),
+// which runs on the user's own Claude subscription.
 
 use std::sync::Mutex;
 
@@ -31,11 +34,14 @@ No markdown formatting (no **, no ##, no bullet dashes). Use plain text with lin
 pub struct Chat {
     /// Full multi-turn history, including tool_use / tool_result blocks.
     messages: Mutex<Vec<Value>>,
+    /// Claude Code session id when the chat runs through `claude -p`.
+    cli_session: Mutex<Option<String>>,
 }
 
 impl Chat {
     pub fn reset(&self) {
         self.messages.lock().unwrap().clear();
+        *self.cli_session.lock().unwrap() = None;
     }
 
     fn is_empty(&self) -> bool {
@@ -76,8 +82,12 @@ pub async fn send(
     query: String,
     context: Option<ChatContext>,
 ) -> Result<ChatReply, String> {
-    let key = secrets::get("anthropic-api-key")
-        .ok_or_else(|| "API key missing. Open settings.".to_string())?;
+    let Some(key) = secrets::get("anthropic-api-key") else {
+        return match find_claude_cli() {
+            Some(cli) => send_via_cli(chat, &cli, query, context).await,
+            None => Err("API key missing and Claude Code not found. Open settings.".into()),
+        };
+    };
 
     let mut content: Vec<Value> = Vec::new();
 
@@ -190,6 +200,107 @@ async fn call(key: &str, body: &Value) -> Result<Value, String> {
         return Err(format!("Claude API {status}: {detail}"));
     }
     serde_json::from_str(&text).map_err(|e| format!("Bad API response: {e}"))
+}
+
+// ── Claude Code CLI fallback ──────────────────────────────────────────────────
+
+/// How long one `claude -p` turn may take, web searches included.
+const CLI_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// `claude` on PATH, then the places the installer puts it — an app started
+/// from the desktop does not always inherit the shell's PATH.
+fn find_claude_cli() -> Option<std::path::PathBuf> {
+    if let Some(p) = crate::find_on_path("claude") {
+        return Some(p);
+    }
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })?;
+    let home = std::path::PathBuf::from(home);
+    let bin = if cfg!(windows) { "claude.exe" } else { "claude" };
+    [home.join(".local/bin").join(bin), home.join(".claude/local").join(bin)]
+        .into_iter()
+        .find(|p| p.is_file())
+}
+
+/// One chat turn through `claude -p`. Multi-turn rides on `--resume`; a dropped
+/// file is handed over by path, with read access to its folder and nothing else.
+async fn send_via_cli(
+    chat: &Chat,
+    cli: &std::path::Path,
+    query: String,
+    context: Option<ChatContext>,
+) -> Result<ChatReply, String> {
+    let session = chat.cli_session.lock().unwrap().clone();
+    let mut prompt = String::new();
+    let mut extra_dir: Option<String> = None;
+    if session.is_none() {
+        match &context {
+            Some(ChatContext::File { name, path }) => {
+                prompt.push_str(&format!("The user dropped a file: {name} (at {path}). Read it to answer.\n\n"));
+                extra_dir = std::path::Path::new(path)
+                    .parent()
+                    .map(|d| d.to_string_lossy().to_string());
+            }
+            Some(ChatContext::Window { app_name, title, url }) => {
+                prompt.push_str(&format!("Context — App: {app_name}, Window: {title}"));
+                if let Some(url) = url {
+                    prompt.push_str(&format!(", URL: {url}"));
+                }
+                prompt.push_str("\n\n");
+            }
+            None => {}
+        }
+    }
+    prompt.push_str(&query);
+
+    // Runs in the inbox so no project's CLAUDE.md or files come along, and with
+    // hooks off so the chat does not show up in the island as a session.
+    let cwd = crate::files::inbox_dir();
+    let _ = std::fs::create_dir_all(&cwd);
+    let mut cmd = tokio::process::Command::new(cli);
+    cmd.current_dir(&cwd)
+        .arg("-p")
+        .args(["--output-format", "json"])
+        .args(["--append-system-prompt", SYSTEM_PROMPT])
+        .args(["--allowedTools", "Read,WebSearch,WebFetch"])
+        .args(["--settings", r#"{"disableAllHooks":true}"#]);
+    if let Some(dir) = &extra_dir {
+        cmd.args(["--add-dir", dir]);
+    }
+    if let Some(id) = &session {
+        cmd.args(["--resume", id]);
+    }
+    // The prompt goes on stdin: no quoting surprises, whatever the user typed.
+    cmd.stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+
+    let mut child = cmd.spawn().map_err(|e| format!("Could not start Claude Code: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        use tokio::io::AsyncWriteExt;
+        let _ = stdin.write_all(prompt.as_bytes()).await;
+    }
+    let output = tokio::time::timeout(CLI_TIMEOUT, child.wait_with_output())
+        .await
+        .map_err(|_| "Claude Code took too long.".to_string())?
+        .map_err(|e| e.to_string())?;
+
+    let parsed: Option<Value> = serde_json::from_slice(&output.stdout).ok();
+    let Some(v) = parsed else {
+        let err = String::from_utf8_lossy(&output.stderr);
+        let err = err.trim();
+        return Err(if err.is_empty() { "Claude Code gave no answer.".into() } else { err.chars().take(300).collect() });
+    };
+    if let Some(id) = v.get("session_id").and_then(Value::as_str) {
+        *chat.cli_session.lock().unwrap() = Some(id.to_string());
+    }
+    let text = v.get("result").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    if v.get("is_error").and_then(Value::as_bool) == Some(true) || text.is_empty() {
+        return Err(if text.is_empty() { "Claude Code gave no answer.".into() } else { text });
+    }
+    Ok(ChatReply { text })
 }
 
 /// PDF → document block, image → image block, text/code → inline text.

@@ -211,7 +211,7 @@ export class Island {
       this.countdown,
     );
 
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const dpr = Math.max(2, window.devicePixelRatio || 1);
     this.greetingCanvas.width = Math.round(EXPANDED_W * dpr);
     this.greetingCanvas.height = Math.round(150 * dpr);
     this.greetingCanvas.style.width = `${EXPANDED_W}px`;
@@ -690,7 +690,7 @@ export class Island {
     if (greetingActive) {
       const gctx = this.greetingCanvas.getContext("2d");
       if (gctx) {
-        const dpr = Math.min(2, window.devicePixelRatio || 1);
+        const dpr = Math.max(2, window.devicePixelRatio || 1);
         gctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         this.greeting.draw(gctx);
       }
@@ -762,7 +762,7 @@ export class Island {
     const size = this.botSize.value;
     const w = Math.max(1, Math.round(size));
     const hCss = w + BOT_OVERHANG;
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const dpr = Math.max(2, window.devicePixelRatio || 1);
     if (this.canvasPx !== w) {
       this.canvasPx = w;
       this.botCanvas.width = Math.round(w * dpr);
