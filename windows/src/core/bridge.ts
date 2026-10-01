@@ -50,9 +50,6 @@ export const Bridge = {
 
   openUrl: (url: string) => call<void>("open_url", { url }),
 
-  /** Desktop notification (Linux: notify-send). */
-  notify: (title: string, body: string) => call<void>("notify", { title, body }),
-
   /** "Open terminal" → opens the folder in VS Code when `code` is on PATH. */
   openInVSCode: (path: string | null) => call<boolean>("open_in_vscode", { path }),
 

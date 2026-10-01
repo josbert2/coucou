@@ -219,22 +219,6 @@ pub(crate) fn find_on_path(stem: &str) -> Option<std::path::PathBuf> {
         })
 }
 
-/// Desktop notification for when Claude finishes while nobody is watching the
-/// island. Linux only for now (`notify-send`); elsewhere it is a no-op.
-#[tauri::command]
-fn notify(title: String, body: String) {
-    #[cfg(target_os = "linux")]
-    {
-        let mut cmd = Command::new("notify-send");
-        cmd.args(["--app-name=Coucou", "--icon=dialog-information", "--"])
-            .arg(title.chars().take(80).collect::<String>())
-            .arg(body.chars().take(240).collect::<String>());
-        spawn_and_reap(cmd);
-    }
-    #[cfg(not(target_os = "linux"))]
-    let _ = (title, body);
-}
-
 #[tauri::command]
 fn quit_app(app: AppHandle) {
     app.exit(0);
@@ -452,7 +436,6 @@ pub fn run() {
             reposition,
             open_url,
             open_in_vscode,
-            notify,
             quit_app,
             hooks_status,
             hooks_preview,
